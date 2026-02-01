@@ -60,7 +60,7 @@
     }
     .grid{
       display:grid;
-      grid-template-columns: 1.fr 1.4fr;
+      grid-template-columns: 1fr 1.4fr;
       gap: 14px;
       align-items:start;
     }
@@ -285,382 +285,183 @@
   </div>
 
 <script>
-  // ====== CONFIG ======
-  const ACRES_PER_SQMI = 640;
-
-  // Approx land areas in acres (only for fraction math)
-  const TOTAL_ACRES = {
-    us: 2.27e9,
-    world: 36.8e9
-  };
-
-  // Where to place the map inside the SVG (same coordinate system as viewBox 0..900 x 0..520)
-  const MAP_BOX = { x: 80, y: 115, w: 740, h: 340 };
-
-  // SVG files (must exist)
-  const MAP_FILES = {
-    us: "./assets/us.svg",
-    world: "./assets/world.svg"
-  };
-
-  // When highlight width is below this many px, show zoom view
-  const MIN_VISIBLE_PX = 8;
-
-  // Max zoom factor for the zoom view bar
-  const MAX_ZOOM = 5000;
-
-  // Raster sampling scale for accurate area cutoff (2 is usually plenty; 3 = more precise but slower)
-  const AREA_SAMPLE_SCALE = 2;
-
-  // ====== ELEMENTS ======
-  const els = {
-    acres: document.getElementById('acres'),
-    mode: document.getElementById('mode'),
-    pct: document.getElementById('pct'),
-    sqmi: document.getElementById('sqmi'),
-    warn: document.getElementById('warn'),
-    exampleBtn: document.getElementById('exampleBtn'),
-
-    silhouetteGroup: document.getElementById('silhouetteGroup'),
-    fillRect: document.getElementById('fillRect'),
-    titleText: document.getElementById('titleText'),
-
-    // These MUST exist in your SVG defs (if you switched to masks, keep these IDs consistent)
-    maskUSGroup: document.getElementById('maskUSGroup'),
-    maskWorldGroup: document.getElementById('maskWorldGroup'),
-
-    zoomWrap: document.getElementById('zoomWrap'),
-    zoomBar: document.getElementById('zoomBar'),
-    zoomFactorText: document.getElementById('zoomFactorText'),
-    zoomNote: document.getElementById('zoomNote'),
-  };
-
-  let currentFit = { x0: MAP_BOX.x, x1: MAP_BOX.x + MAP_BOX.w };
-
-  // Holds the precomputed "true area" model for the current map mode
-  let areaModel = null;
-
-  // ====== HELPERS ======
-  function clamp(n, a, b){ return Math.max(a, Math.min(b, n)); }
-
-  function formatNumber(n){
-    if (!isFinite(n)) return "—";
-    return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
-  }
-
-  function clearChildren(el){
-    while (el.firstChild) el.removeChild(el.firstChild);
-  }
-
-  // Only keep real geometry
-  function pickShapeNodes(svgDoc){
-    return svgDoc.querySelectorAll("path, polygon, polyline");
-  }
-
-  // Clone shapes and strip paint attributes/styles so we control fill/stroke
-  function cloneShapesIntoGroup(svgDoc, targetGroup){
-    clearChildren(targetGroup);
-
-    const shapes = pickShapeNodes(svgDoc);
-    shapes.forEach(node => {
-      const clone = document.importNode(node, true);
-      clone.removeAttribute("class");
-      clone.removeAttribute("fill");
-      clone.removeAttribute("stroke");
-      clone.removeAttribute("style");
-      targetGroup.appendChild(clone);
-    });
-
-    if (!targetGroup.firstChild) {
-      throw new Error("No shapes found in SVG (expected path/polygon/polyline).");
-    }
-  }
-
-  // For the visible silhouette
-  function styleSilhouette(groupEl){
-    // ensure descendants don't override paint
-    const all = groupEl.querySelectorAll("path, polygon, polyline");
-    all.forEach(el => {
-      el.removeAttribute("style");
-      el.removeAttribute("fill");
-      el.removeAttribute("stroke");
-    });
-
-    groupEl.setAttribute("fill", "rgba(232,236,255,.12)");
-    groupEl.setAttribute("stroke", "rgba(232,236,255,.35)");
-    groupEl.setAttribute("stroke-width", "1.5");
-    groupEl.setAttribute("stroke-linejoin", "round");
-    groupEl.setAttribute("stroke-linecap", "round");
-  }
-
-  // For mask groups: MUST be solid white fill, no stroke
-  function styleMaskGroup(groupEl){
-    const all = groupEl.querySelectorAll("path, polygon, polyline");
-    all.forEach(el => {
-      el.setAttribute("fill", "#fff");
-      el.setAttribute("stroke", "none");
-      el.removeAttribute("style"); // in case original SVG had fill:none
-    });
-    groupEl.setAttribute("fill", "#fff");
-    groupEl.setAttribute("stroke", "none");
-    groupEl.removeAttribute("style");
-  }
-
-  async function fitTransformForGroupAsync(groupEl, box){
-    await new Promise(requestAnimationFrame);
-
-    const bbox = groupEl.getBBox();
-    if (!bbox.width || !bbox.height) {
-      return `translate(${box.x}, ${box.y}) scale(1)`;
-    }
-
-    const scale = Math.min(box.w / bbox.width, box.h / bbox.height);
-    const newW = bbox.width * scale;
-    const newH = bbox.height * scale;
-
-    const tx = box.x + (box.w - newW) / 2 - bbox.x * scale;
-    const ty = box.y + (box.h - newH) / 2 - bbox.y * scale;
-
-    return `translate(${tx}, ${ty}) scale(${scale})`;
-  }
-
-  // --- TRUE AREA ACCURACY ---
-  // Build a per-column pixel area model of the (transformed) mask group inside MAP_BOX.
-  // Then we can choose an xCut so that area(left of xCut)/totalArea === frac.
-  async function buildAreaModelFromMaskGroup(maskGroupEl){
-    // Build an SVG string containing ONLY a white silhouette on black background
-    // in the SAME 900x520 coordinate system as your main SVG.
-    const serializer = new XMLSerializer();
-    const clonedGroup = maskGroupEl.cloneNode(true);
-
-    // Ensure clone is paint-safe
-    const nodes = clonedGroup.querySelectorAll("path, polygon, polyline");
-    nodes.forEach(n => {
-      n.setAttribute("fill", "#fff");
-      n.setAttribute("stroke", "none");
-      n.removeAttribute("style");
-    });
-    clonedGroup.setAttribute("fill", "#fff");
-    clonedGroup.setAttribute("stroke", "none");
-
-    const svgStr =
-      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 520" width="900" height="520">
-         <rect x="0" y="0" width="900" height="520" fill="black"/>
-         ${serializer.serializeToString(clonedGroup)}
-       </svg>`;
-
-    // Render into an offscreen canvas via <img>
-    const img = new Image();
-    const url = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svgStr);
-
-    await new Promise((resolve, reject) => {
-      img.onload = resolve;
-      img.onerror = () => reject(new Error("Failed to rasterize SVG for area model."));
-      img.src = url;
-    });
-
-    const scale = AREA_SAMPLE_SCALE;
-    const cw = 900 * scale;
-    const ch = 520 * scale;
-
-    const canvas = document.createElement("canvas");
-    canvas.width = cw;
-    canvas.height = ch;
-
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    ctx.clearRect(0, 0, cw, ch);
-    ctx.drawImage(img, 0, 0, cw, ch);
-
-    const x0s = Math.floor(MAP_BOX.x * scale);
-    const x1s = Math.floor((MAP_BOX.x + MAP_BOX.w) * scale);
-    const y0s = Math.floor(MAP_BOX.y * scale);
-    const y1s = Math.floor((MAP_BOX.y + MAP_BOX.h) * scale);
-
-    const wS = x1s - x0s;
-    const col = new Uint32Array(wS);
-
-    const imgData = ctx.getImageData(x0s, y0s, wS, y1s - y0s);
-    const data = imgData.data;
-    const rowW = wS;
-
-    // Count "land pixels" per column (alpha threshold)
-    // Our raster has black bg and white land, so alpha is always 255;
-    // the real signal is brightness. We’ll use the red channel > ~10.
-    for (let y = 0; y < (y1s - y0s); y++){
-      let idx = y * rowW * 4;
-      for (let x = 0; x < rowW; x++){
-        const r = data[idx];       // 0..255
-        // If pixel is not black, consider it land
-        if (r > 10) col[x] += 1;
-        idx += 4;
-      }
-    }
-
-    // Prefix sums for fast lookup
-    const cum = new Float64Array(wS + 1);
-    let total = 0;
-    for (let i = 0; i < wS; i++){
-      total += col[i];
-      cum[i + 1] = total;
-    }
-
-    // Binary search for xCut by target area
-    function xCutForFrac(frac){
-      if (!isFinite(frac) || frac <= 0) return MAP_BOX.x;
-      if (frac >= 1) return MAP_BOX.x + MAP_BOX.w;
-
-      const target = frac * total;
-
-      // Find smallest i s.t. cum[i] >= target
-      let lo = 0, hi = wS;
-      while (lo < hi){
-        const mid = (lo + hi) >> 1;
-        if (cum[mid] >= target) hi = mid;
-        else lo = mid + 1;
-      }
-
-      // Convert scaled columns back to SVG units
-      return MAP_BOX.x + (lo / scale);
-    }
-
-    return { totalPixels: total, xCutForFrac };
-  }
-
-  async function loadMap(mode){
-    const url = MAP_FILES[mode];
-    const isWorld = mode === "world";
-
-    els.titleText.textContent = isWorld ? "World (land area)" : "United States (land area)";
-
-    const res = await fetch(url, { cache: "no-store" });
-    if (!res.ok) throw new Error(`Failed to load ${url} (HTTP ${res.status})`);
-
-    const text = (await res.text()).trim();
-    const doc = new DOMParser().parseFromString(text, "image/svg+xml");
-
-    // SimpleMaps often has root style="...fill:none..." — remove it.
-    const root = doc.querySelector("svg");
-    if (root) root.removeAttribute("style");
-
-    // --- Import shapes into silhouette + active mask group ---
-    cloneShapesIntoGroup(doc, els.silhouetteGroup);
-
-    if (isWorld) {
-      cloneShapesIntoGroup(doc, els.maskWorldGroup);
-      clearChildren(els.maskUSGroup);
-      // apply mask to fill rect
-      els.fillRect.setAttribute("mask", "url(#maskWorld)");
-    } else {
-      cloneShapesIntoGroup(doc, els.maskUSGroup);
-      clearChildren(els.maskWorldGroup);
-      els.fillRect.setAttribute("mask", "url(#maskUS)");
-    }
-
-    // Style them
-    styleSilhouette(els.silhouetteGroup);
-
-    const activeMaskGroup = isWorld ? els.maskWorldGroup : els.maskUSGroup;
-    styleMaskGroup(activeMaskGroup);
-
-    // Fit transform based on silhouette bbox; apply SAME transform to mask group
-    const transformStr = await fitTransformForGroupAsync(els.silhouetteGroup, MAP_BOX);
-    els.silhouetteGroup.setAttribute("transform", transformStr);
-    activeMaskGroup.setAttribute("transform", transformStr);
-
-    currentFit = { x0: MAP_BOX.x, x1: MAP_BOX.x + MAP_BOX.w };
-
-    // Build true-area model (this is the key)
-    areaModel = await buildAreaModelFromMaskGroup(activeMaskGroup);
-  }
-
-  function update(){
-    const mode = els.mode.value;
-    let acres = Number(els.acres.value);
-    if (!isFinite(acres) || acres < 0) acres = 0;
-
-    const total = TOTAL_ACRES[mode];
-    const frac = total > 0 ? acres / total : 0;
-    const pct = frac * 100;
-
-    const X0 = currentFit.x0;
-    const W = currentFit.x1 - currentFit.x0;
-
-    // ✅ TRUE AREA-ACCURATE cutoff
-    let xCut = X0;
-    if (areaModel && areaModel.totalPixels > 0) {
-      xCut = areaModel.xCutForFrac(clamp(frac, 0, 1));
-    } else {
-      // Fallback: width-based if model isn't ready
-      xCut = X0 + clamp(frac, 0, 1) * W;
-    }
-
-    const fillW = clamp(xCut - X0, 0, W);
-    els.fillRect.setAttribute("x", X0);
-    els.fillRect.setAttribute("width", fillW);
-
-    // Stats
-    els.pct.textContent = `${formatNumber(pct)}%`;
-    els.sqmi.textContent = formatNumber(acres / ACRES_PER_SQMI);
-
-    // Warnings
-    if (frac > 1) {
-      els.warn.textContent =
-        `That’s more than 100% of the selected land area — fully highlighted (over by ${formatNumber((frac - 1) * 100)}%).`;
-    } else {
-      els.warn.textContent = "";
-    }
-
-    // Auto zoom view for tiny fills (purely visual)
-    // Auto zoom view for tiny fills (purely visual)
-// IMPORTANT: allow fillW === 0 for extremely tiny fractions
-const expectedPx = clamp(frac, 0, 1) * W;          // visibility based on fraction
-const tinyAtThisScale = (frac > 0) && (expectedPx < MIN_VISIBLE_PX);
-
-if (acres > 0 && tinyAtThisScale) {
-  els.zoomWrap.style.display = "block";
-
-  const targetFrac = 0.25; // aim to show ~25% in the zoom bar
-  let zoomFactor = targetFrac / frac;
-  zoomFactor = clamp(zoomFactor, 1, MAX_ZOOM);
-
-  const zoomedFrac = clamp(frac * zoomFactor, 0, 1);
-  els.zoomBar.style.width = `${zoomedFrac * 100}%`;
-  els.zoomFactorText.textContent = `×${formatNumber(zoomFactor)} zoom`;
-
-  els.zoomNote.textContent =
-    `Real scale is ${formatNumber(pct)}%. Zoom View magnifies the fraction by ×${formatNumber(zoomFactor)} so it’s visible.`;
-} else {
-  els.zoomWrap.style.display = "none";
-  els.zoomBar.style.width = "0%";
+/* ================= CONFIG ================= */
+
+const ACRES_PER_SQMI = 640;
+
+const TOTAL_ACRES = {
+  us: 2.27e9,
+  world: 36.8e9,
+  california: 100_206_720,
+  ct: 3_548_160,
+  nyc: 193_280
+};
+
+const MAP_BOX = { x: 80, y: 115, w: 740, h: 340 };
+
+const MAP_FILES = {
+  us: "./assets/us.svg",
+  world: "./assets/world.svg",
+  california: "./assets/california.svg",
+  ct: "./assets/ct.svg",
+  nyc: "./assets/nyc.svg"
+};
+
+function pickAutoRegion(acres, mode){
+  if (mode === "world") return "world";
+  if (acres < 200_000) return "nyc";
+  if (acres < 500_000) return "ct";
+  if (acres < 1_000_000) return "california";
+  return "us";
 }
 
-  }
+/* ================= ELEMENTS ================= */
 
-  async function init(){
-    await loadMap(els.mode.value);
-    update();
+const els = {
+  acres: document.getElementById("acres"),
+  mode: document.getElementById("mode"),
+  pct: document.getElementById("pct"),
+  sqmi: document.getElementById("sqmi"),
+  warn: document.getElementById("warn"),
+  exampleBtn: document.getElementById("exampleBtn"),
+  silhouetteGroup: document.getElementById("silhouetteGroup"),
+  fillRect: document.getElementById("fillRect"),
+  titleText: document.getElementById("titleText"),
+  maskUSGroup: document.getElementById("maskUSGroup"),
+  maskWorldGroup: document.getElementById("maskWorldGroup")
+};
 
-    els.acres.addEventListener("input", update);
+let areaModel = null;
+let currentFit = { x0: MAP_BOX.x, x1: MAP_BOX.x + MAP_BOX.w };
+let currentRegion = null;
 
-    els.mode.addEventListener("change", async () => {
-      areaModel = null; // reset model while loading
-      await loadMap(els.mode.value);
-      update();
-    });
+/* ================= HELPERS ================= */
 
-    els.exampleBtn.addEventListener("click", () => {
-      els.acres.value = 1000000;
-      update();
-      els.acres.focus();
-      els.acres.select();
-    });
-  }
+const clamp = (n,a,b)=>Math.max(a,Math.min(b,n));
+const format = n => isFinite(n) ? n.toLocaleString(undefined,{maximumFractionDigits:2}) : "—";
 
-  init().catch(err => {
-    console.error(err);
-    els.warn.textContent =
-      `Map load error.\nMake sure you added assets/us.svg and assets/world.svg.\n(${err.message})`;
+function clear(el){ while(el.firstChild) el.removeChild(el.firstChild); }
+
+function cloneShapes(doc, target){
+  clear(target);
+  doc.querySelectorAll("path,polygon,polyline").forEach(n=>{
+    const c=document.importNode(n,true);
+    c.removeAttribute("style"); c.removeAttribute("fill"); c.removeAttribute("stroke");
+    target.appendChild(c);
   });
+}
+
+function styleGroup(group, fill, stroke){
+  group.setAttribute("fill", fill);
+  group.setAttribute("stroke", stroke || "none");
+}
+
+/* ================= AREA MODEL ================= */
+
+async function buildAreaModel(maskGroup){
+  const svg = `
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 520">
+    <rect width="900" height="520" fill="black"/>
+    ${new XMLSerializer().serializeToString(maskGroup)}
+  </svg>`;
+  const img = new Image();
+  img.src = "data:image/svg+xml;charset=utf-8,"+encodeURIComponent(svg);
+  await img.decode();
+
+  const scale = 2;
+  const c = document.createElement("canvas");
+  c.width = 900*scale; c.height = 520*scale;
+  const ctx = c.getContext("2d",{willReadFrequently:true});
+  ctx.drawImage(img,0,0,c.width,c.height);
+
+  const x0 = MAP_BOX.x*scale, x1 = (MAP_BOX.x+MAP_BOX.w)*scale;
+  const y0 = MAP_BOX.y*scale, y1 = (MAP_BOX.y+MAP_BOX.h)*scale;
+
+  const w = x1-x0;
+  const col = new Uint32Array(w);
+  const data = ctx.getImageData(x0,y0,w,y1-y0).data;
+
+  for(let y=0;y<y1-y0;y++){
+    for(let x=0;x<w;x++){
+      if(data[(y*w+x)*4]>10) col[x]++;
+    }
+  }
+
+  const cum=[0];
+  col.forEach(v=>cum.push(cum.at(-1)+v));
+  const total=cum.at(-1);
+
+  return {
+    xCut(frac){
+      if(frac<=0) return MAP_BOX.x;
+      if(frac>=1) return MAP_BOX.x+MAP_BOX.w;
+      const t=frac*total;
+      let i=cum.findIndex(v=>v>=t);
+      return MAP_BOX.x+(i/scale);
+    }
+  };
+}
+
+/* ================= MAP LOADER ================= */
+
+async function loadMap(region){
+  if(region===currentRegion) return;
+  currentRegion = region;
+  areaModel = null;
+
+  const res = await fetch(MAP_FILES[region],{cache:"no-store"});
+  const doc = new DOMParser().parseFromString(await res.text(),"image/svg+xml");
+
+  cloneShapes(doc, els.silhouetteGroup);
+  cloneShapes(doc, els.maskUSGroup);
+
+  styleGroup(els.silhouetteGroup,"rgba(232,236,255,.12)","rgba(232,236,255,.35)");
+  styleGroup(els.maskUSGroup,"#fff");
+
+  const bbox = els.silhouetteGroup.getBBox();
+  const s = Math.min(MAP_BOX.w/bbox.width, MAP_BOX.h/bbox.height);
+  const tx = MAP_BOX.x+(MAP_BOX.w-bbox.width*s)/2 - bbox.x*s;
+  const ty = MAP_BOX.y+(MAP_BOX.h-bbox.height*s)/2 - bbox.y*s;
+
+  const t = `translate(${tx},${ty}) scale(${s})`;
+  els.silhouetteGroup.setAttribute("transform",t);
+  els.maskUSGroup.setAttribute("transform",t);
+  els.fillRect.setAttribute("mask","url(#maskUS)");
+
+  areaModel = await buildAreaModel(els.maskUSGroup);
+  els.titleText.textContent = region === "us"
+    ? "United States (land area)"
+    : region === "world" ? "World (land area)"
+    : region.charAt(0).toUpperCase()+region.slice(1);
+}
+
+/* ================= UPDATE ================= */
+
+async function update(){
+  const acres = Math.max(0,Number(els.acres.value)||0);
+  const mode = els.mode.value;
+  const region = pickAutoRegion(acres, mode);
+
+  await loadMap(region);
+
+  const total = TOTAL_ACRES[region];
+  const frac = total ? acres/total : 0;
+  const xCut = areaModel.xCut(clamp(frac,0,1));
+
+  els.fillRect.setAttribute("x",MAP_BOX.x);
+  els.fillRect.setAttribute("width",clamp(xCut-MAP_BOX.x,0,MAP_BOX.w));
+
+  els.pct.textContent = format(frac*100)+"%";
+  els.sqmi.textContent = format(acres/ACRES_PER_SQMI);
+}
+
+/* ================= INIT ================= */
+
+els.acres.addEventListener("input",update);
+els.mode.addEventListener("change",update);
+els.exampleBtn.addEventListener("click",()=>{els.acres.value=1_000_000;update();});
+
+update();
 </script>
 </body>
 </html>
