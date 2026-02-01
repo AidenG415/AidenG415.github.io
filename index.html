@@ -147,7 +147,7 @@
         </div>
 
         <div class="hint">
-          Tip: This is a <b>percentage highlight</b> inside a map silhouette. It’s meant to make big numbers feel real.
+          Tip: This is a <b>percentage highlight</b> inside a real map outline. The highlight grows left → right.
         </div>
 
         <div class="stats">
@@ -164,68 +164,42 @@
         <div class="warn" id="warn"></div>
 
         <div class="footer">
-          Want it to feel even more “real”? Next upgrade is adding <b>zoom steps</b> and comparisons (football fields, Manhattan, etc.).
+          Next upgrade: add “zoom modes” (state / US / world) for small numbers.
         </div>
       </div>
 
       <div class="viz">
-        <!-- SVG maps: we clip a left-to-right fill rectangle inside an outline -->
         <svg id="svg" viewBox="0 0 900 520" width="100%" height="auto" role="img" aria-label="Map highlight visualization">
           <defs>
-            <!-- US outline (simplified silhouette path) -->
-            <clipPath id="clipUS">
-              <!-- This is a stylized outline, not a precise cartographic boundary -->
-              <path id="pathUS" d="M90,220
-                C120,160 190,140 240,155
-                C275,120 335,110 385,135
-                C430,110 490,110 530,145
-                C590,120 660,140 700,185
-                C760,215 785,260 770,300
-                C745,350 690,375 640,365
-                C600,405 535,410 485,390
-                C435,420 360,410 320,375
-                C250,390 175,365 140,320
-                C105,285 75,255 90,220 Z"/>
-            </clipPath>
-
-            <!-- World outline (very simplified “blob” silhouette) -->
-            <clipPath id="clipWorld">
-              <path id="pathWorld" d="M85,260
-                C95,170 170,130 245,150
-                C300,90 385,95 440,150
-                C510,115 610,125 670,175
-                C755,185 815,240 805,305
-                C790,395 685,420 600,390
-                C535,455 410,455 345,395
-                C265,430 150,395 110,325
-                C95,305 82,285 85,260 Z"/>
-            </clipPath>
+            <clipPath id="clipUS"></clipPath>
+            <clipPath id="clipWorld"></clipPath>
           </defs>
 
-          <!-- Background base (unfilled area) -->
+          <!-- Background base -->
           <rect x="0" y="0" width="900" height="520" fill="rgba(232,236,255,.06)"></rect>
 
-          <!-- Base map area (light) -->
-          <g id="baseGroup">
-            <rect x="60" y="100" width="780" height="320" rx="26" fill="rgba(232,236,255,.06)"></rect>
-          </g>
+          <!-- Soft frame -->
+          <rect x="60" y="100" width="780" height="320" rx="26" fill="rgba(232,236,255,.06)"></rect>
 
-          <!-- Filled portion (clipped to chosen silhouette) -->
           <g id="mapGroup">
-            <!-- base silhouette -->
-            <path id="silhouette" fill="rgba(232,236,255,.12)" stroke="rgba(232,236,255,.35)" stroke-width="2"></path>
+            <!-- Real map silhouette paths go here -->
+            <g id="silhouetteGroup"
+               fill="rgba(232,236,255,.12)"
+               stroke="rgba(232,236,255,.35)"
+               stroke-width="1.5"
+               stroke-linejoin="round"
+               stroke-linecap="round"></g>
 
-            <!-- fill rect clipped into the silhouette -->
+            <!-- Fill grows left→right, clipped to silhouette -->
             <g id="clipGroup">
               <rect id="fillRect" x="0" y="0" width="0" height="520" fill="rgba(0,212,255,.75)"></rect>
             </g>
           </g>
 
-          <!-- Label -->
           <text x="70" y="70" fill="rgba(232,236,255,.75)" font-size="20" font-weight="600" id="titleText">
             United States (land area)
           </text>
-          <text x="70" y="95" fill="rgba(170,179,218,.95)" font-size="13" id="subText">
+          <text x="70" y="95" fill="rgba(170,179,218,.95)" font-size="13">
             Highlight grows left → right based on acres entered
           </text>
         </svg>
@@ -239,18 +213,26 @@
   </div>
 
   <script>
-    // Approx constants (good enough for visualization; you can refine later):
+    // ====== CONFIG ======
     // 1 square mile = 640 acres
     const ACRES_PER_SQMI = 640;
 
-    // Approx land areas in acres (used only to compute percentage fill):
-    // US land area ~ 2.27 billion acres (approx)
-    // World land area ~ 36.8 billion acres (approx)
+    // Approx land areas in acres (used only to compute percentage fill)
     const TOTAL_ACRES = {
       us: 2.27e9,
       world: 36.8e9
     };
 
+    // Where to place the map inside the SVG (tweak if you want)
+    const MAP_BOX = { x: 80, y: 115, w: 740, h: 340 };
+
+    // Paths to your real SVG files (must exist in your repo)
+    const MAP_FILES = {
+      us: "./assets/us.svg",
+      world: "./assets/world.svg"
+    };
+
+    // ====== ELEMENTS ======
     const els = {
       acres: document.getElementById('acres'),
       mode: document.getElementById('mode'),
@@ -258,14 +240,17 @@
       sqmi: document.getElementById('sqmi'),
       warn: document.getElementById('warn'),
       exampleBtn: document.getElementById('exampleBtn'),
-
-      svg: document.getElementById('svg'),
-      silhouette: document.getElementById('silhouette'),
       clipGroup: document.getElementById('clipGroup'),
       fillRect: document.getElementById('fillRect'),
       titleText: document.getElementById('titleText'),
+      silhouetteGroup: document.getElementById('silhouetteGroup'),
+      clipUS: document.getElementById('clipUS'),
+      clipWorld: document.getElementById('clipWorld'),
     };
 
+    let currentFit = { x0: MAP_BOX.x, x1: MAP_BOX.x + MAP_BOX.w };
+
+    // ====== HELPERS ======
     function clamp(n, a, b){ return Math.max(a, Math.min(b, n)); }
 
     function formatNumber(n){
@@ -273,70 +258,134 @@
       return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
     }
 
-    function setMode(mode){
-      // Swap silhouette path + clipPath
-      const usPath = document.getElementById('pathUS').getAttribute('d');
-      const worldPath = document.getElementById('pathWorld').getAttribute('d');
+    function clearChildren(el){
+      while (el.firstChild) el.removeChild(el.firstChild);
+    }
 
-      if (mode === 'world') {
-        els.silhouette.setAttribute('d', worldPath);
-        els.clipGroup.setAttribute('clip-path', 'url(#clipWorld)');
-        els.titleText.textContent = "World (land area)";
+    function svgPathEl(d){
+      const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      p.setAttribute("d", d);
+      return p;
+    }
+
+    function extractPathDs(svgDoc){
+      // Most map SVGs are lots of <path>. This grabs them all.
+      return Array.from(svgDoc.querySelectorAll("path"))
+        .map(p => p.getAttribute("d"))
+        .filter(Boolean);
+    }
+
+    function setPaths(groupEl, pathsD){
+      clearChildren(groupEl);
+      for (const d of pathsD) groupEl.appendChild(svgPathEl(d));
+    }
+
+    function fitGroupToBox(groupEl, box){
+      // Must be in the DOM to measure
+      const bbox = groupEl.getBBox();
+
+      const scaleX = box.w / bbox.width;
+      const scaleY = box.h / bbox.height;
+      const scale = Math.min(scaleX, scaleY);
+
+      const newW = bbox.width * scale;
+      const newH = bbox.height * scale;
+
+      const tx = box.x + (box.w - newW)/2 - bbox.x * scale;
+      const ty = box.y + (box.h - newH)/2 - bbox.y * scale;
+
+      groupEl.setAttribute("transform", `translate(${tx}, ${ty}) scale(${scale})`);
+
+      currentFit = { x0: box.x, x1: box.x + box.w };
+    }
+
+    async function loadMap(mode){
+      const url = MAP_FILES[mode];
+      const isWorld = mode === "world";
+
+      els.titleText.textContent = isWorld ? "World (land area)" : "United States (land area)";
+
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) throw new Error(`Failed to load ${url} (HTTP ${res.status})`);
+
+      const text = (await res.text()).trim();
+      const doc = new DOMParser().parseFromString(text, "image/svg+xml");
+
+      const pathsD = extractPathDs(doc);
+      if (!pathsD.length) throw new Error(`No <path> elements found in ${url}. Use an SVG that contains paths.`);
+
+      // Populate the silhouette
+      setPaths(els.silhouetteGroup, pathsD);
+
+      // Populate the correct clipPath
+      if (isWorld) {
+        setPaths(els.clipWorld, pathsD);
+        els.clipGroup.setAttribute("clip-path", "url(#clipWorld)");
       } else {
-        els.silhouette.setAttribute('d', usPath);
-        els.clipGroup.setAttribute('clip-path', 'url(#clipUS)');
-        els.titleText.textContent = "United States (land area)";
+        setPaths(els.clipUS, pathsD);
+        els.clipGroup.setAttribute("clip-path", "url(#clipUS)");
       }
+
+      // Fit the silhouette into the map box
+      fitGroupToBox(els.silhouetteGroup, MAP_BOX);
     }
 
     function update(){
       const mode = els.mode.value;
       let acres = Number(els.acres.value);
-
       if (!isFinite(acres) || acres < 0) acres = 0;
 
       const total = TOTAL_ACRES[mode];
       const frac = (total > 0) ? acres / total : 0;
       const pct = frac * 100;
 
-      // For the fill rectangle: we fill across the whole SVG width, clipped into the silhouette.
-      // The silhouette roughly spans x≈90..770, so use a nice padding bounds:
-      const X0 = 60;
-      const X1 = 840;
-      const W = X1 - X0;
+      // Fill grows left->right inside the MAP_BOX width
+      const X0 = currentFit.x0;
+      const W = currentFit.x1 - currentFit.x0;
       const fillW = clamp(frac, 0, 1) * W;
 
-      els.fillRect.setAttribute('x', X0);
-      els.fillRect.setAttribute('width', fillW);
+      els.fillRect.setAttribute("x", X0);
+      els.fillRect.setAttribute("width", fillW);
 
       els.pct.textContent = `${formatNumber(pct)}%`;
       els.sqmi.textContent = formatNumber(acres / ACRES_PER_SQMI);
 
-      // Warnings/notes
       if (frac > 1) {
-        els.warn.textContent = `That’s more than 100% of the selected land area — the map is fully highlighted (and you’re over by ${formatNumber((frac - 1) * 100)}%).`;
+        els.warn.textContent =
+          `That’s more than 100% of the selected land area — fully highlighted (over by ${formatNumber((frac - 1) * 100)}%).`;
       } else if (acres === 0) {
         els.warn.textContent = "";
       } else if (pct < 0.0001) {
-        els.warn.textContent = "So small relative to the selected land area that it barely registers — try a bigger number or add a zoom mode later.";
+        els.warn.textContent =
+          "So small relative to the selected land area that it barely registers — later you can add a zoom mode for small values.";
       } else {
         els.warn.textContent = "";
       }
     }
 
-    // Init
-    setMode(els.mode.value);
-    update();
-
-    // Events
-    els.acres.addEventListener('input', update);
-    els.mode.addEventListener('change', () => { setMode(els.mode.value); update(); });
-
-    els.exampleBtn.addEventListener('click', () => {
-      els.acres.value = 1000000;
+    async function init(){
+      await loadMap(els.mode.value);
       update();
-      els.acres.focus();
-      els.acres.select();
+
+      els.acres.addEventListener("input", update);
+
+      els.mode.addEventListener("change", async () => {
+        await loadMap(els.mode.value);
+        update();
+      });
+
+      els.exampleBtn.addEventListener("click", () => {
+        els.acres.value = 1000000;
+        update();
+        els.acres.focus();
+        els.acres.select();
+      });
+    }
+
+    init().catch(err => {
+      console.error(err);
+      els.warn.textContent =
+        `Map load error. Make sure you added /assets/us.svg and /assets/world.svg. (${err.message})`;
     });
   </script>
 </body>
