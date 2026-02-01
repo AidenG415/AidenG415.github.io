@@ -195,21 +195,19 @@
             <input id="acres" type="number" min="0" step="1" value="1000000" />
           </div>
           <div style="width:260px; max-width:100%;">
-  <label for="acresSlider" style="font-size:12px; color:var(--muted);">
-    Drag to adjust
-  </label>
-  <input
-    id="acresSlider"
-    type="range"
-    min="0"
-    max="1000000"
-    step="1000"
-    value="1000000"
-    aria-label="Acres slider"
-    style="width:100%;"
-  />
-</div>
-
+            <label style="margin-top:12px; display:block; font-size:12px; color:var(--muted);">
+            Drag to adjust
+          </label>
+          <input
+            id="acresSlider"
+            type="range"
+            min="0"
+            max="1000000000"
+            step="1000"
+            value="1000000"
+            style="width:100%;"
+          />
+            </div>
 
           <div>
             <label for="mode">Compare to</label>
@@ -342,6 +340,7 @@ const els = {
   fillRect: document.getElementById("fillRect"),
   titleText: document.getElementById("titleText"),
   maskUSGroup: document.getElementById("maskUSGroup"),
+  acresSlider: document.getElementById("acresSlider"),
   maskWorldGroup: document.getElementById("maskWorldGroup")
 };
 
@@ -457,28 +456,59 @@ els.titleText.textContent = REGION_LABELS[region] || region;
 /* ================= UPDATE ================= */
 
 async function update(){
-  const acres = Math.max(0,Number(els.acres.value)||0);
+  const acres = Math.max(0, Number(els.acres.value) || 0);
   const mode = els.mode.value;
   const region = pickAutoRegion(acres, mode);
 
   await loadMap(region);
 
   const total = TOTAL_ACRES[region];
-  const frac = total ? acres/total : 0;
-  const xCut = areaModel.xCut(clamp(frac,0,1));
+  const frac = total ? acres / total : 0;
+  const xCut = areaModel.xCut(clamp(frac, 0, 1));
 
-  els.fillRect.setAttribute("x",MAP_BOX.x);
-  els.fillRect.setAttribute("width",clamp(xCut-MAP_BOX.x,0,MAP_BOX.w));
+  els.fillRect.setAttribute("x", MAP_BOX.x);
+  els.fillRect.setAttribute(
+    "width",
+    clamp(xCut - MAP_BOX.x, 0, MAP_BOX.w)
+  );
 
-  els.pct.textContent = format(frac*100)+"%";
-  els.sqmi.textContent = format(acres/ACRES_PER_SQMI);
+  // ✅ THESE TWO LINES GO HERE
+  els.pct.textContent = format(frac * 100) + "%";
+  els.sqmi.textContent = format(acres / ACRES_PER_SQMI);
 }
+
 
 /* ================= INIT ================= */
 
-els.acres.addEventListener("input",update);
-els.mode.addEventListener("change",update);
-els.exampleBtn.addEventListener("click",()=>{els.acres.value=1_000_000;update();});
+/* ================= INIT ================= */
+
+function syncFromSlider(){
+  els.acres.value = els.acresSlider.value;
+  update();
+}
+
+function syncFromNumber(){
+  // keep slider in sync, clamp to slider max
+  const v = Math.max(0, Math.min(1_000_000_000, Number(els.acres.value) || 0));
+  els.acresSlider.value = v;
+  update();
+}
+
+els.acresSlider.addEventListener("input", syncFromSlider);
+els.acres.addEventListener("input", syncFromNumber);
+
+els.mode.addEventListener("change", update);
+
+els.exampleBtn.addEventListener("click", () => {
+  els.acres.value = 1_000_000;
+  els.acresSlider.value = 1_000_000;
+  update();
+});
+
+// initial sync
+els.acresSlider.value = els.acres.value;
+update();
+
 
 update();
 </script>
