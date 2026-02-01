@@ -611,23 +611,28 @@
     }
 
     // Auto zoom view for tiny fills (purely visual)
-    if (acres > 0 && fillW > 0 && fillW < MIN_VISIBLE_PX && frac > 0) {
-      els.zoomWrap.style.display = "block";
+    // Auto zoom view for tiny fills (purely visual)
+// IMPORTANT: allow fillW === 0 for extremely tiny fractions
+const tinyAtThisScale = (frac > 0) && (fillW < MIN_VISIBLE_PX);
 
-      const targetFrac = 0.25;
-      let zoomFactor = targetFrac / frac;
-      zoomFactor = clamp(zoomFactor, 1, MAX_ZOOM);
+if (acres > 0 && tinyAtThisScale) {
+  els.zoomWrap.style.display = "block";
 
-      const zoomedFrac = clamp(frac * zoomFactor, 0, 1);
-      els.zoomBar.style.width = `${zoomedFrac * 100}%`;
-      els.zoomFactorText.textContent = `×${formatNumber(zoomFactor)} zoom`;
+  const targetFrac = 0.25; // aim to show ~25% in the zoom bar
+  let zoomFactor = targetFrac / frac;
+  zoomFactor = clamp(zoomFactor, 1, MAX_ZOOM);
 
-      els.zoomNote.textContent =
-        `Real scale is ${formatNumber(pct)}%. Zoom View magnifies the fraction by ×${formatNumber(zoomFactor)} so it’s visible.`;
-    } else {
-      els.zoomWrap.style.display = "none";
-      els.zoomBar.style.width = "0%";
-    }
+  const zoomedFrac = clamp(frac * zoomFactor, 0, 1);
+  els.zoomBar.style.width = `${zoomedFrac * 100}%`;
+  els.zoomFactorText.textContent = `×${formatNumber(zoomFactor)} zoom`;
+
+  els.zoomNote.textContent =
+    `Real scale is ${formatNumber(pct)}%. Zoom View magnifies the fraction by ×${formatNumber(zoomFactor)} so it’s visible.`;
+} else {
+  els.zoomWrap.style.display = "none";
+  els.zoomBar.style.width = "0%";
+}
+
   }
 
   async function init(){
