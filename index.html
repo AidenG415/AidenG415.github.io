@@ -96,6 +96,7 @@
       color: var(--warn);
       font-size: 12px;
       margin-top: 10px;
+      min-height: 16px;
     }
 
     /* SVG styling */
@@ -116,6 +117,45 @@
     }
     .dot.fill{background: rgba(0,212,255,.75);}
     .dot.base{background: rgba(232,236,255,.12);}
+
+    /* Zoom view */
+    .zoomWrap{
+      margin-top: 12px;
+      border:1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px;
+      background: rgba(15,23,48,.55);
+      display:none;
+    }
+    .zoomTitle{
+      font-size:12px;
+      color:var(--muted);
+      margin-bottom:8px;
+      display:flex;
+      justify-content:space-between;
+      gap:10px;
+      flex-wrap:wrap;
+    }
+    .zoomBarOuter{
+      width:100%;
+      height:14px;
+      border-radius: 999px;
+      border:1px solid var(--line);
+      background: rgba(232,236,255,.06);
+      overflow:hidden;
+    }
+    .zoomBarInner{
+      height:100%;
+      width:0%;
+      background: rgba(0,212,255,.75);
+    }
+    .zoomNote{
+      margin-top:8px;
+      font-size:12px;
+      color:var(--muted);
+      line-height:1.35;
+    }
+
     .footer{margin-top:14px; font-size:12px; color:var(--muted);}
     a{color:var(--accent2); text-decoration:none}
     a:hover{text-decoration:underline}
@@ -147,7 +187,7 @@
         </div>
 
         <div class="hint">
-          Tip: This is a <b>percentage highlight</b> inside a real map outline. The highlight grows left → right.
+          Tip: The main highlight is true scale. If it’s too small to see, a “Zoom View” appears below.
         </div>
 
         <div class="stats">
@@ -163,22 +203,38 @@
 
         <div class="warn" id="warn"></div>
 
+        <!-- Auto zoom view for tiny highlights -->
+        <div class="zoomWrap" id="zoomWrap">
+          <div class="zoomTitle">
+            <span><b>Zoom View</b> (magnified for visibility)</span>
+            <span id="zoomFactorText">×—</span>
+          </div>
+          <div class="zoomBarOuter" aria-label="Zoomed fraction bar">
+            <div class="zoomBarInner" id="zoomBar"></div>
+          </div>
+          <div class="zoomNote" id="zoomNote">
+            This doesn’t change the real percent — it’s just a magnified view so tiny values aren’t invisible.
+          </div>
+        </div>
+
         <div class="footer">
-          Next upgrade: add “zoom modes” (state / US / world) for small numbers.
+          Next upgrade: add “zoom modes” (state / US / world) with real state silhouettes.
         </div>
       </div>
 
       <div class="viz">
         <svg id="svg" viewBox="0 0 900 520" width="100%" height="auto" role="img" aria-label="Map highlight visualization">
           <defs>
-            <clipPath id="clipUS"></clipPath>
-            <clipPath id="clipWorld"></clipPath>
+            <!-- IMPORTANT: clipPathUnits=userSpaceOnUse so transforms match our fitted placement -->
+            <clipPath id="clipUS" clipPathUnits="userSpaceOnUse">
+              <g id="clipUSGroup"></g>
+            </clipPath>
+            <clipPath id="clipWorld" clipPathUnits="userSpaceOnUse">
+              <g id="clipWorldGroup"></g>
+            </clipPath>
           </defs>
 
-          <!-- Background base -->
           <rect x="0" y="0" width="900" height="520" fill="rgba(232,236,255,.06)"></rect>
-
-          <!-- Soft frame -->
           <rect x="60" y="100" width="780" height="320" rx="26" fill="rgba(232,236,255,.06)"></rect>
 
           <g id="mapGroup">
@@ -214,23 +270,28 @@
 
   <script>
     // ====== CONFIG ======
-    // 1 square mile = 640 acres
     const ACRES_PER_SQMI = 640;
 
-    // Approx land areas in acres (used only to compute percentage fill)
+    // Approx land areas in acres (only for fraction math)
     const TOTAL_ACRES = {
       us: 2.27e9,
       world: 36.8e9
     };
 
-    // Where to place the map inside the SVG (tweak if you want)
+    // Where to place the map inside the SVG
     const MAP_BOX = { x: 80, y: 115, w: 740, h: 340 };
 
-    // Paths to your real SVG files (must exist in your repo)
+    // SVG files (must exist)
     const MAP_FILES = {
       us: "./assets/us.svg",
       world: "./assets/world.svg"
     };
+
+    // When highlight width is below this many px, show zoom view
+    const MIN_VISIBLE_PX = 8;
+
+    // Max zoom factor for the zoom view bar
+    const MAX_ZOOM = 5000;
 
     // ====== ELEMENTS ======
     const els = {
@@ -240,12 +301,19 @@
       sqmi: document.getElementById('sqmi'),
       warn: document.getElementById('warn'),
       exampleBtn: document.getElementById('exampleBtn'),
+
+      silhouetteGroup: document.getElementById('silhouetteGroup'),
       clipGroup: document.getElementById('clipGroup'),
       fillRect: document.getElementById('fillRect'),
       titleText: document.getElementById('titleText'),
-      silhouetteGroup: document.getElementById('silhouetteGroup'),
-      clipUS: document.getElementById('clipUS'),
-      clipWorld: document.getElementById('clipWorld'),
+
+      clipUSGroup: document.getElementById('clipUSGroup'),
+      clipWorldGroup: document.getElementById('clipWorldGroup'),
+
+      zoomWrap: document.getElementById('zoomWrap'),
+      zoomBar: document.getElementById('zoomBar'),
+      zoomFactorText: document.getElementById('zoomFactorText'),
+      zoomNote: document.getElementById('zoomNote'),
     };
 
     let currentFit = { x0: MAP_BOX.x, x1: MAP_BOX.x + MAP_BOX.w };
@@ -269,7 +337,8 @@
     }
 
     function extractPathDs(svgDoc){
-      // Most map SVGs are lots of <path>. This grabs them all.
+      // Supports typical map SVGs comprised of <path>.
+      // If your SVG uses polygons/rects, tell me and I’ll extend this.
       return Array.from(svgDoc.querySelectorAll("path"))
         .map(p => p.getAttribute("d"))
         .filter(Boolean);
@@ -280,8 +349,8 @@
       for (const d of pathsD) groupEl.appendChild(svgPathEl(d));
     }
 
-    function fitGroupToBox(groupEl, box){
-      // Must be in the DOM to measure
+    function fitTransformForGroup(groupEl, box){
+      // group must be in DOM
       const bbox = groupEl.getBBox();
 
       const scaleX = box.w / bbox.width;
@@ -294,9 +363,15 @@
       const tx = box.x + (box.w - newW)/2 - bbox.x * scale;
       const ty = box.y + (box.h - newH)/2 - bbox.y * scale;
 
-      groupEl.setAttribute("transform", `translate(${tx}, ${ty}) scale(${scale})`);
+      return `translate(${tx}, ${ty}) scale(${scale})`;
+    }
 
-      currentFit = { x0: box.x, x1: box.x + box.w };
+    function applyFitTransform(transformStr){
+      // Apply to BOTH silhouette and the active clip group so the clip matches.
+      els.silhouetteGroup.setAttribute("transform", transformStr);
+
+      // also update the currentFit for fill width
+      currentFit = { x0: MAP_BOX.x, x1: MAP_BOX.x + MAP_BOX.w };
     }
 
     async function loadMap(mode){
@@ -314,20 +389,35 @@
       const pathsD = extractPathDs(doc);
       if (!pathsD.length) throw new Error(`No <path> elements found in ${url}. Use an SVG that contains paths.`);
 
-      // Populate the silhouette
+      // Populate silhouette paths
       setPaths(els.silhouetteGroup, pathsD);
 
-      // Populate the correct clipPath
+      // Populate BOTH clip groups (keeps switching instant later)
+      // (You can optimize to only set the active one, but this is fine.)
       if (isWorld) {
-        setPaths(els.clipWorld, pathsD);
+        setPaths(els.clipWorldGroup, pathsD);
+        // Clear other clip group so it doesn't hang onto old shapes
+        clearChildren(els.clipUSGroup);
         els.clipGroup.setAttribute("clip-path", "url(#clipWorld)");
       } else {
-        setPaths(els.clipUS, pathsD);
+        setPaths(els.clipUSGroup, pathsD);
+        clearChildren(els.clipWorldGroup);
         els.clipGroup.setAttribute("clip-path", "url(#clipUS)");
       }
 
-      // Fit the silhouette into the map box
-      fitGroupToBox(els.silhouetteGroup, MAP_BOX);
+      // IMPORTANT: compute a transform based on silhouette bbox, then apply SAME transform to clip group
+      // We do this by setting transform on the clip group itself.
+      const transformStr = fitTransformForGroup(els.silhouetteGroup, MAP_BOX);
+      els.silhouetteGroup.setAttribute("transform", transformStr);
+
+      if (isWorld) {
+        els.clipWorldGroup.setAttribute("transform", transformStr);
+      } else {
+        els.clipUSGroup.setAttribute("transform", transformStr);
+      }
+
+      // Fill width uses the MAP_BOX width
+      currentFit = { x0: MAP_BOX.x, x1: MAP_BOX.x + MAP_BOX.w };
     }
 
     function update(){
@@ -339,27 +429,44 @@
       const frac = (total > 0) ? acres / total : 0;
       const pct = frac * 100;
 
-      // Fill grows left->right inside the MAP_BOX width
       const X0 = currentFit.x0;
       const W = currentFit.x1 - currentFit.x0;
-      const fillW = clamp(frac, 0, 1) * W;
 
+      // Real-scale fill
+      const fillW = clamp(frac, 0, 1) * W;
       els.fillRect.setAttribute("x", X0);
       els.fillRect.setAttribute("width", fillW);
 
+      // Stats
       els.pct.textContent = `${formatNumber(pct)}%`;
       els.sqmi.textContent = formatNumber(acres / ACRES_PER_SQMI);
 
+      // Warnings
       if (frac > 1) {
         els.warn.textContent =
           `That’s more than 100% of the selected land area — fully highlighted (over by ${formatNumber((frac - 1) * 100)}%).`;
-      } else if (acres === 0) {
-        els.warn.textContent = "";
-      } else if (pct < 0.0001) {
-        els.warn.textContent =
-          "So small relative to the selected land area that it barely registers — later you can add a zoom mode for small values.";
       } else {
         els.warn.textContent = "";
+      }
+
+      // Auto zoom view for tiny fills
+      if (acres > 0 && fillW > 0 && fillW < MIN_VISIBLE_PX && frac > 0) {
+        els.zoomWrap.style.display = "block";
+
+        // choose a zoom factor so the zoomed bar is at least ~25% width (if possible)
+        const targetFrac = 0.25;
+        let zoomFactor = targetFrac / frac;
+        zoomFactor = clamp(zoomFactor, 1, MAX_ZOOM);
+
+        const zoomedFrac = clamp(frac * zoomFactor, 0, 1);
+        els.zoomBar.style.width = `${zoomedFrac * 100}%`;
+        els.zoomFactorText.textContent = `×${formatNumber(zoomFactor)} zoom`;
+
+        els.zoomNote.textContent =
+          `Real scale is ${formatNumber(pct)}%. Zoom View magnifies the fraction by ×${formatNumber(zoomFactor)} so it’s visible.`;
+      } else {
+        els.zoomWrap.style.display = "none";
+        els.zoomBar.style.width = "0%";
       }
     }
 
