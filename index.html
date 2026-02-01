@@ -194,6 +194,22 @@
             <label for="acres">Acres</label>
             <input id="acres" type="number" min="0" step="1" value="1000000" />
           </div>
+          <div style="width:260px; max-width:100%;">
+  <label for="acresSlider" style="font-size:12px; color:var(--muted);">
+    Drag to adjust
+  </label>
+  <input
+    id="acresSlider"
+    type="range"
+    min="0"
+    max="1000000"
+    step="1000"
+    value="1000000"
+    aria-label="Acres slider"
+    style="width:100%;"
+  />
+</div>
+
 
           <div>
             <label for="mode">Compare to</label>
@@ -294,7 +310,7 @@ const TOTAL_ACRES = {
   world: 36.8e9,
   california: 100_206_720,
   ct: 3_548_160,
-  nyc: 193_280
+  ri: 662_000
 };
 
 const MAP_BOX = { x: 80, y: 115, w: 740, h: 340 };
@@ -309,7 +325,7 @@ const MAP_FILES = {
 function pickAutoRegion(acres, mode){
   if (mode === "world") return "world";
   if (acres < 600_000) return "ri";
-  if (acres < 1_000_000) return "california";
+  if (acres < 1_000_000_000) return "california";
   return "us";
 }
 
