@@ -268,29 +268,23 @@
     </div>
   </div>
 
-  <script>
+ <script>
   // ====== CONFIG ======
   const ACRES_PER_SQMI = 640;
 
-  // Approx land areas in acres (only for fraction math)
   const TOTAL_ACRES = {
     us: 2.27e9,
     world: 36.8e9
   };
 
-  // Where to place the map inside the SVG
   const MAP_BOX = { x: 80, y: 115, w: 740, h: 340 };
 
-  // SVG files (must exist)
   const MAP_FILES = {
     us: "./assets/us.svg",
     world: "./assets/world.svg"
   };
 
-  // When highlight width is below this many px, show zoom view
   const MIN_VISIBLE_PX = 8;
-
-  // Max zoom factor for the zoom view bar
   const MAX_ZOOM = 5000;
 
   // ====== ELEMENTS ======
@@ -330,7 +324,6 @@
     while (el.firstChild) el.removeChild(el.firstChild);
   }
 
-  // Clone SVG shape elements from an external SVG doc into a target <g>
   function cloneShapesIntoGroup(svgDoc, targetGroup){
     clearChildren(targetGroup);
 
@@ -340,29 +333,38 @@
       targetGroup.appendChild(clone);
     });
 
-    // If we accidentally grabbed nothing, throw early so you see the real error
     if (!targetGroup.firstChild) {
       throw new Error("No shapes found in SVG (expected path/polygon/etc).");
     }
   }
 
-  // Strip inline fill rules so group-level fill & clip work
   function stripInlineFills(groupEl){
     const all = groupEl.querySelectorAll("*");
     all.forEach(el => {
+      // attributes
       el.removeAttribute("fill");
+      el.removeAttribute("stroke");
+
+      // style=""
       const style = el.getAttribute("style") || "";
       if (style) {
-        const cleaned = style.replace(/(?:^|;)\s*fill\s*:\s*[^;]+/gi, "");
+        const cleaned = style
+          .replace(/(?:^|;)\s*fill\s*:\s*[^;]+/gi, "")
+          .replace(/(?:^|;)\s*stroke\s*:\s*[^;]+/gi, "")
+          .replace(/(?:^|;)\s*fill-opacity\s*:\s*[^;]+/gi, "")
+          .replace(/(?:^|;)\s*stroke-opacity\s*:\s*[^;]+/gi, "");
         if (cleaned !== style) el.setAttribute("style", cleaned);
       }
     });
 
-    // also remove fill on group itself
     groupEl.removeAttribute("fill");
+    groupEl.removeAttribute("stroke");
+
     const gStyle = groupEl.getAttribute("style") || "";
     if (gStyle) {
-      const cleaned = gStyle.replace(/fill\s*:\s*[^;]+;?/gi, "");
+      const cleaned = gStyle
+        .replace(/(?:^|;)\s*fill\s*:\s*[^;]+/gi, "")
+        .replace(/(?:^|;)\s*stroke\s*:\s*[^;]+/gi, "");
       if (cleaned !== gStyle) groupEl.setAttribute("style", cleaned);
     }
   }
@@ -376,7 +378,6 @@
     }
 
     const scale = Math.min(box.w / bbox.width, box.h / bbox.height);
-
     const newW = bbox.width * scale;
     const newH = bbox.height * scale;
 
@@ -398,12 +399,11 @@
     const text = (await res.text()).trim();
     const doc = new DOMParser().parseFromString(text, "image/svg+xml");
 
-    // STEP 1: remove root SVG fill:none that breaks coloring
+    // STEP 1: kill root <svg style="...fill:none..."> from SimpleMaps
     const svgRoot = doc.querySelector("svg");
     if (svgRoot) svgRoot.removeAttribute("style");
 
-
-    // Import shapes into silhouette + clip
+    // Import shapes
     cloneShapesIntoGroup(doc, els.silhouetteGroup);
 
     if (isWorld) {
@@ -416,24 +416,27 @@
       els.clipGroup.setAttribute("clip-path", "url(#clipUS)");
     }
 
-    // Kill inline fill rules from the imported SVG
+    // Remove inline paint
     stripInlineFills(els.silhouetteGroup);
     if (isWorld) stripInlineFills(els.clipWorldGroup);
     else stripInlineFills(els.clipUSGroup);
 
-    // Force a visible base style on the silhouette
+    // STEP 2: force the clip shapes to be "filled" (otherwise clip = nothing)
+    const activeClipGroup = isWorld ? els.clipWorldGroup : els.clipUSGroup;
+    activeClipGroup.setAttribute("fill", "#fff");
+    activeClipGroup.setAttribute("stroke", "none");
+
+    // Base style (silhouette)
     els.silhouetteGroup.setAttribute("fill", "rgba(232,236,255,.12)");
     els.silhouetteGroup.setAttribute("stroke", "rgba(232,236,255,.35)");
     els.silhouetteGroup.setAttribute("stroke-width", "1.5");
     els.silhouetteGroup.setAttribute("stroke-linejoin", "round");
     els.silhouetteGroup.setAttribute("stroke-linecap", "round");
 
-    // Fit + apply same transform to clip group
+    // Fit transform
     const transformStr = await fitTransformForGroupAsync(els.silhouetteGroup, MAP_BOX);
     els.silhouetteGroup.setAttribute("transform", transformStr);
-
-    if (isWorld) els.clipWorldGroup.setAttribute("transform", transformStr);
-    else els.clipUSGroup.setAttribute("transform", transformStr);
+    activeClipGroup.setAttribute("transform", transformStr);
 
     currentFit = { x0: MAP_BOX.x, x1: MAP_BOX.x + MAP_BOX.w };
   }
@@ -450,16 +453,13 @@
     const X0 = currentFit.x0;
     const W = currentFit.x1 - currentFit.x0;
 
-    // Real-scale fill
     const fillW = clamp(frac, 0, 1) * W;
     els.fillRect.setAttribute("x", X0);
     els.fillRect.setAttribute("width", fillW);
 
-    // Stats
     els.pct.textContent = `${formatNumber(pct)}%`;
     els.sqmi.textContent = formatNumber(acres / ACRES_PER_SQMI);
 
-    // Warnings
     if (frac > 1) {
       els.warn.textContent =
         `That’s more than 100% of the selected land area — fully highlighted (over by ${formatNumber((frac - 1) * 100)}%).`;
@@ -467,7 +467,6 @@
       els.warn.textContent = "";
     }
 
-    // Auto zoom view for tiny fills
     if (acres > 0 && fillW > 0 && fillW < MIN_VISIBLE_PX && frac > 0) {
       els.zoomWrap.style.display = "block";
 
