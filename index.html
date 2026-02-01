@@ -309,8 +309,7 @@ const MAP_FILES = {
 
 function pickAutoRegion(acres, mode){
   if (mode === "world") return "world";
-  if (acres < 200_000) return "nyc";
-  if (acres < 500_000) return "ct";
+  if (acres < 600_000) return "ri";
   if (acres < 1_000_000) return "california";
   return "us";
 }
